@@ -32,13 +32,13 @@ with gzip.open(filename, mode='rt', compresslevel=9, encoding=None, errors=None,
             VALUES (%s) ON CONFLICT DO NOTHING;
         """, (user, ))
         counter += 1
-        if counter % 1000 == 0:
+        if counter % 10000 == 0:
             conn.commit()
             print(counter)
 
-        if counter > 10000:
-            conn.commit()
-            break
+        # if counter > 10000:
+        #     conn.commit()
+        #     break
 
 counter = 0
 
@@ -63,17 +63,20 @@ with gzip.open(filename, mode='rt', compresslevel=9, encoding=None, errors=None,
         cur.execute("""
             INSERT INTO points (time, coord_x, coord_y, color, user_id)
             VALUES (%(date)s, %(x)s, %(y)s, %(color)s, (SELECT user_id FROM place_users WHERE user_name = %(user)s))
+            ON CONFLICT DO NOTHING;
         """, _data)
 
         counter += 1
-        if counter % 1000 == 0:
+        if counter % 10000 == 0:
             conn.commit()
             print(counter)
 
-        if counter > 10000:
-            conn.commit()
-            break
+        # if counter > 10000:
+        #     conn.commit()
+        #     break
 
+
+conn.commit()
 
 print("Users:", len(users))
 print("Data:", len(data))
