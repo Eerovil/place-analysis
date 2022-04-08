@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 
 import gzip
-import sys
 import csv
+from io import TextIOWrapper
+
+from urllib.request import urlopen
 
 import psycopg2
 import psycopg2.extras
+from psycopg2.errors import NotNullViolation
 
 conn = psycopg2.connect(
     host="localhost",
@@ -15,144 +18,128 @@ conn = psycopg2.connect(
     password="mysecretpassword"
 )
 
-filename = sys.argv[1]
-print("Loading data from {}".format(filename))
 file_users = set()
 
 data = []
 users = []
 counter = 0
 cur = conn.cursor()
-conn.autocommit = False
+conn.autocommit = True
+
+def _parse_row(row):
+    _date_str = " ".join(row[0].split(' ')[:-1])
+    if '.' not in _date_str:
+        _date_str += '.000000'
+    if len(_date_str) < 26:
+        _date_str += '0' * (26 - len(_date_str))
+    
+    return {
+        'date': _date_str,
+        'user': row[1],
+        'color': row[2],
+        'x': int(row[3].split(',')[0]),
+        'y': int(row[3].split(',')[1]),
+    }
 
 
-cur.execute("""
-    SELECT user_name, user_id
-    FROM place_users
-""")
-all_users = {}
-for _users_row in cur.fetchall():
-    all_users[_users_row[0]] = _users_row[1]
+def _read_users(rows, force=False):
+    if not force:
+        first = rows[0][1]
+        last = rows[-1][1]
 
-print("all_users: {}".format(len(all_users)))
+        # Check if first and last exist already in database
+        cur.execute("""
+            SELECT user_name
+            FROM place_users
+            WHERE user_name = %s OR user_name = %s
+        """, (first, last))
+        existing = cur.fetchall()
+        if len(existing) == 2:
+            print("Users {} and {} already exist in database".format(first, last))
+            return
 
-def commit_users(_users):
+    _users = [(row[1], ) for row in rows]
+
+    print("Inserting {} users...".format(len(_users)))
     psycopg2.extras.execute_batch(cur, """
         INSERT INTO place_users(user_name)
         VALUES (%s) ON CONFLICT DO NOTHING;
     """, _users)
 
-with gzip.open(filename, mode='rt', compresslevel=9, encoding=None, errors=None, newline=None) as f:
-    spamreader = csv.reader(f, delimiter=',', quotechar='"')
-    first = True
-    for row in spamreader:
-        if first:
-            first = False
-            continue
-        file_users.add(row[1])
-        if row[1] in all_users:
-            continue
-        users.append((row[1], ))
 
-        counter += 1
-        if counter % 5000 == 0:
-            commit_users(users)
-            users = []
-            print(counter)
+def _read_points(rows, force=False):
+    if not force:
+        # Check if first and last exist already in database
+        first = _parse_row(rows[0])
+        last = _parse_row(rows[-1])
 
-        # if counter > 10000:
-        #     conn.commit()
-        #     break
+        cur.execute("""
+            SELECT time, coord_x, coord_y
+            FROM points
+            WHERE time = %s AND coord_x = %s AND coord_y = %s
+        """, (first['date'], first['x'], first['y']))
+        existing = cur.fetchall()
+        if len(existing) == 1:
+            print("Point {} (first) already exists in database".format(first))
+            # Check last point
+            cur.execute("""
+                SELECT time, coord_x, coord_y
+                FROM points
+                WHERE time = %s AND coord_x = %s AND coord_y = %s
+            """, (last['date'], last['x'], last['y']))
+            existing = cur.fetchall()
+            if len(existing) == 1:
+                print("Point {} (last) already exists in database".format(last))
+                return
 
-commit_users(users)
-print("done: counter: {}".format(counter))
-users = []
+    _points = [_parse_row(row) for row in rows]
 
-if counter > 0:
-    cur.execute("""
-        SELECT user_name, user_id
-        FROM place_users
-    """)
-    all_users = {}
-    for _users_row in cur.fetchall():
-        all_users[_users_row[0]] = _users_row[1]
-
-print("all_users: {}".format(len(all_users)))
-print("Fetching existing points...")
-
-user_ids = tuple(all_users[_user] for _user in file_users)
-user_timestamps = set()
-cur.execute("""
-    SELECT user_id, time
-    FROM points
-    WHERE user_id IN %s
-""", (user_ids, ))
-for _points_row in cur.fetchall():
-    _date_str = str(_points_row[1])
-    if '.' not in _date_str:
-        _date_str += '.000000'
-    if len(_date_str) < 26:
-        _date_str += '0' * (26 - len(_date_str))
-    user_timestamps.add("{}_{}".format(_points_row[0], _date_str))
-
-print("done: user_timestamps: {}".format(len(user_timestamps)))
-
-def commit_points(_points):
+    print("Inserting {} points...".format(len(_points)))
     psycopg2.extras.execute_batch(cur, """
         INSERT INTO points (time, coord_x, coord_y, color, user_id)
-        VALUES (%(date)s, %(x)s, %(y)s, %(color)s, %(user)s)
+        VALUES (%(date)s, %(x)s, %(y)s, %(color)s, (SELECT user_id FROM place_users WHERE user_name = %(user)s))
         ON CONFLICT DO NOTHING;
     """, _points)
 
-counter = 0
-skipped = 0
-data = []
-# import pprofile
-# profiler = pprofile.Profile()
-# with profiler:
-with gzip.open(filename, mode='rt', compresslevel=9, encoding=None, errors=None, newline=None) as f:
-    spamreader = csv.reader(f, delimiter=',', quotechar='"')
-    first = True
-    for row in spamreader:
-        if first:
-            first = False
-            continue
-        user = row[1]
-        #format date, e.g. 2022-04-01 15:38:01.116 UTC
-        #2022-04-03 17:43:14.599000
-        _date_str = " ".join(row[0].split(' ')[:-1])
-        if '.' not in _date_str:
-            _date_str += '.000000'
-        if len(_date_str) < 26:
-            _date_str += '0' * (26 - len(_date_str))
-        
-        _user_timestamp = "{}_{}".format(all_users[user], _date_str)
-        if _user_timestamp in user_timestamps:
-            skipped += 1
-            continue
 
-        print("user_timestamp: {}".format(_user_timestamp))
-        
-        # date = datetime.datetime.strptime(_date_str, "%Y-%m-%d %H:%M:%S.%f")
-        _data = {
-            "date": _date_str,
-            "user": all_users[user],
-            "color": row[2],
-            "x": int(row[3].split(',')[0]),
-            "y": int(row[3].split(',')[1]),
-        }
-        data.append(_data)
+import sys
+offset = int(sys.argv[1]) if len(sys.argv) > 1 else 0
 
-        counter += 1
-        if counter % 10000 == 0:
-            commit_points(data)
-            data = []
-            print(counter)
+for i in range(offset, 77):
+    zeropadded = str(i).zfill(12)
+    filename = "2022_place_canvas_history-{}.csv.gzip".format(zeropadded)
+    url = "https://placedata.reddit.com/data/canvas-history/{}".format(filename)
 
-commit_points(data)
+    print("Streaming {}".format(filename))
 
-# profiler.dump_stats('profiler_dump.txt')
+    with urlopen(url) as gzip_file:
+        fd = gzip.GzipFile(fileobj=gzip_file, mode="r")
 
-conn.commit()
+        lines_batch = []
+        first = True
+        for line in TextIOWrapper(fd, newline=''):
+            if first:
+                first = False
+                continue
+            comma_split = line.split(',')
+            # sample line
+            # 2022-04-04 01:03:24.691 UTC,BIKKEGyB9ZLqD0zHF2wpM9wnHCor8mfV59jYWDqKgKjV1DDyDcR156082NAF7/lIAoYJQxbgQEelAAlbDA3evw==,#000000,"165,1507"
+            parsed_line = (
+                comma_split[0],
+                comma_split[1],
+                comma_split[2],
+                ",".join(comma_split[3:]).replace('"', ''),
+            )
+            lines_batch.append(parsed_line)
+            if len(lines_batch) == 100000:
+                _read_users(lines_batch)
+                try:
+                    _read_points(lines_batch)
+                except NotNullViolation:
+                    print("Got a NotNullViolation, forcing user re-import")
+                    conn.rollback()
+                    _read_users(lines_batch, force=True)
+                    _read_points(lines_batch, force=True)
 
-print("done: {}, skipped: {}".format(counter, skipped))
+                lines_batch = []
+            
