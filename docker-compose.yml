@@ -16,6 +16,30 @@ services:
       - place_database:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    command:
+      - "postgres"
+      - "-c"
+      - "fsync='off'"
+      - "-c"
+      - "synchronous_commit='off'"
+      - "-c"
+      - "full_page_writes='off'"
+      - "-c"
+      - "bgwriter_lru_maxpages=0"
+      - "-c"
+      - "wal_level='minimal'"
+      - "-c"
+      - "archive_mode='off'"
+      - "-c"
+      - "work_mem='64MB'"
+      - "-c"
+      - "checkpoint_segments=32"
+      - "-c"
+      - "max_wal_senders=0"
+      - "-c"
+      - "maintenance_work_mem='64MB'"
+      - "-c"
+      - "shared_buffers='128MB'"
 
   adminer:
     image: adminer

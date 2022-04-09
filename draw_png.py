@@ -3,11 +3,14 @@
 
 from PIL import Image, ImageDraw
 import datetime
-import re
+import os
+import json
+from dateutil import parser as dateparser
+import argparse
 
-import psycopg2
+import psycopg
 
-conn = psycopg2.connect(
+conn = psycopg.connect(
     host="localhost",
     port="5432",
     dbname="place",
@@ -15,12 +18,28 @@ conn = psycopg2.connect(
     password="mysecretpassword"
 )
 
+parser = argparse.ArgumentParser(description="Build png on given hour:minute",
+                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+parser.add_argument("--correct_time", help="Timestamp when image is correct (unix ms)", default=None)
+args = parser.parse_args()
+config = vars(args)
+
 users = set()
 data = []
 counter = 0
 cur = conn.cursor()
 
-on_date = datetime.datetime.now()
+user_filter = None
+if os.path.exists('users.json'):
+    with open('users.json', 'r') as f:
+        user_filter = set(json.load(f))
+
+if not config.get('correct_time'):
+    config['correct_time'] = '1649112287221'  # Start of white pixels only
+
+first_date = datetime.datetime.fromtimestamp(1648817027.221)
+selected_date = datetime.datetime.fromtimestamp(int(config['correct_time']) / 1000.0)
+
 
 print("Fetching max_x")
 cur.execute("""
@@ -28,7 +47,7 @@ cur.execute("""
     FROM points
     WHERE time <= %s AND coord_x > 999
     LIMIT 1
-""", (on_date, ))
+""", (selected_date, ))
 max_x = 2000 if cur.fetchone() else 1000
 
 print("Fetching max_y")
@@ -37,7 +56,7 @@ cur.execute("""
     FROM points
     WHERE time <= %s AND coord_y > 999
     LIMIT 1
-""", (on_date, ))
+""", (selected_date, ))
 max_y = 2000 if cur.fetchone() else 1000
 
 # size of image
@@ -49,8 +68,6 @@ im = Image.new('RGB', canvas, (255, 255, 255))
 draw = ImageDraw.Draw(im)
 
 used = set()
-
-curr_time = on_date
 
 total_points = max_x * max_y
 
@@ -64,17 +81,34 @@ while x < max_x:
     while y < max_y:
         print("")
         print("Fetching ({}, {})...".format(x, y), end="")
-        cur.execute("""
-        select distinct on (coord_x, coord_y) coord_x, coord_y, color
-        from points
-        WHERE coord_x >= %(min_x)s AND coord_x < %(max_x)s AND coord_y >= %(min_y)s AND coord_y < %(max_y)s
-        order by coord_x, coord_y, time desc;
-        """, {
-            "min_x": x,
-            "max_x": x + BLOCK_SIZE,
-            "min_y": y,
-            "max_y": y + BLOCK_SIZE,
-        })
+        if not user_filter:
+            cur.execute("""
+            select distinct on (coord_x, coord_y) coord_x, coord_y, color
+            from points
+            WHERE coord_x >= %(min_x)s AND coord_x < %(max_x)s AND coord_y >= %(min_y)s AND coord_y < %(max_y)s AND time <= %(selected_date)s
+            order by coord_x, coord_y, time desc;
+            """, {
+                "min_x": x,
+                "max_x": x + BLOCK_SIZE,
+                "min_y": y,
+                "max_y": y + BLOCK_SIZE,
+                "selected_date": selected_date,
+            })
+        else:
+            cur.execute("""
+            select distinct on (coord_x, coord_y) coord_x, coord_y, color
+            from points
+            WHERE coord_x >= %(min_x)s AND coord_x < %(max_x)s AND coord_y >= %(min_y)s AND coord_y < %(max_y)s AND time <= %(selected_date)s
+            AND user_id in %(user_filter)s
+            order by coord_x, coord_y, time desc;
+            """, {
+                "min_x": x,
+                "max_x": x + BLOCK_SIZE,
+                "min_y": y,
+                "max_y": y + BLOCK_SIZE,
+                "user_filter": tuple(user_filter),
+                "selected_date": selected_date,
+            })
 
         print("done.", end="")
 

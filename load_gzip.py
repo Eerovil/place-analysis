@@ -1,22 +1,16 @@
 #!/usr/bin/env python3
 
 import gzip
-import csv
+import datetime
 from io import TextIOWrapper
+
+import time
 
 from urllib.request import urlopen
 
-import psycopg2
-import psycopg2.extras
-from psycopg2.errors import NotNullViolation
 
-conn = psycopg2.connect(
-    host="localhost",
-    port="5432",
-    dbname="place",
-    user="postgres",
-    password="mysecretpassword"
-)
+import db
+conn = db.get_conn()
 
 file_users = set()
 
@@ -24,95 +18,103 @@ data = []
 users = []
 counter = 0
 cur = conn.cursor()
-conn.autocommit = True
+conn.autocommit = False
 
-def _parse_row(row):
-    _date_str = " ".join(row[0].split(' ')[:-1])
-    if '.' not in _date_str:
-        _date_str += '.000000'
-    if len(_date_str) < 26:
-        _date_str += '0' * (26 - len(_date_str))
-    
-    return {
-        'date': _date_str,
-        'user': row[1],
-        'color': row[2],
-        'x': int(row[3].split(',')[0]),
-        'y': int(row[3].split(',')[1]),
-    }
+def _parse_rows(rows):
+    _points = []
+    pk_set = set()
+    for _row in rows:
+        _date_str = " ".join(_row[0].split(' ')[:-1])
+        if '.' not in _date_str:
+            _date_str += '.000000'
+        if len(_date_str) < 26:
+            _date_str += '0' * (26 - len(_date_str))
+        
+        _values = (
+            1000000, #_date_str,
+            int(_row[3].split(',')[0]),
+            int(_row[3].split(',')[1]),
+            _row[2],
+            _row[1],
+        )
 
+        _pk_str = "{}_{}_{}_{}".format(_values[0], _values[1], _values[2], _values[4])
+        if _pk_str in pk_set:
+            # print("Duplicate: {}".format(_pk_str))
+            continue
+        pk_set.add(_pk_str)
 
-def _read_users(rows, force=False):
-    if not force:
-        first = rows[0][1]
-        last = rows[-1][1]
+        _points.append(_values)
+    return _points
 
-        # Check if first and last exist already in database
-        cur.execute("""
-            SELECT user_name
-            FROM place_users
-            WHERE user_name = %s OR user_name = %s
-        """, (first, last))
-        existing = cur.fetchall()
-        if len(existing) == 2:
-            print("Users {} and {} already exist in database".format(first, last))
-            return
+def _check_exists(rows):
+    rows = _parse_rows([rows[0], rows[-1]])
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM points
+        WHERE time = %s AND user_name = %s AND coord_x = %s AND coord_y = %s OR time = %s AND user_name = %s AND coord_x = %s AND coord_y = %s
+    """, (rows[0][0], rows[0][4], rows[0][1], rows[0][2], rows[1][0], rows[1][4], rows[1][1], rows[1][2]))
 
-    _users = [(row[1], ) for row in rows]
+    return cur.fetchone() == (2,)
 
-    print("Inserting {} users...".format(len(_users)))
-    psycopg2.extras.execute_batch(cur, """
-        INSERT INTO place_users(user_name)
-        VALUES (%s) ON CONFLICT DO NOTHING;
-    """, _users)
+def _read_points(rows, block_users={}):
+    # Get related users
 
-
-def _read_points(rows, force=False):
-    if not force:
-        # Check if first and last exist already in database
-        first = _parse_row(rows[0])
-        last = _parse_row(rows[-1])
-
-        cur.execute("""
-            SELECT time, coord_x, coord_y
-            FROM points
-            WHERE time = %s AND coord_x = %s AND coord_y = %s
-        """, (first['date'], first['x'], first['y']))
-        existing = cur.fetchall()
-        if len(existing) == 1:
-            print("Point {} (first) already exists in database".format(first))
-            # Check last point
-            cur.execute("""
-                SELECT time, coord_x, coord_y
-                FROM points
-                WHERE time = %s AND coord_x = %s AND coord_y = %s
-            """, (last['date'], last['x'], last['y']))
-            existing = cur.fetchall()
-            if len(existing) == 1:
-                print("Point {} (last) already exists in database".format(last))
-                return
-
-    _points = [_parse_row(row) for row in rows]
-
+    _points = _parse_rows(rows)
     print("Inserting {} points...".format(len(_points)))
-    psycopg2.extras.execute_batch(cur, """
-        INSERT INTO points (time, coord_x, coord_y, color, user_id)
-        VALUES (%(date)s, %(x)s, %(y)s, %(color)s, (SELECT user_id FROM place_users WHERE user_name = %(user)s))
-        ON CONFLICT DO NOTHING;
-    """, _points)
+    start = time.time()
+    try:
+        with cur.copy("""COPY points (time, coord_x, coord_y, color, user_name) FROM STDIN;""") as copy:
+            for _point in _points:
+                copy.write_row(_point)
+
+    except Exception as e:
+        print("Failed to copy, using ON CONFLICT DO NOTHING")
+        print(e)
+        conn.rollback()
+    
+
+        cur.execute("""
+            CREATE TEMP TABLE tmp_table 
+            (LIKE points INCLUDING DEFAULTS)
+            ON COMMIT DROP;
+        """)
+
+        with cur.copy("""COPY tmp_table (time, coord_x, coord_y, color, user_name) FROM STDIN;""") as copy:
+            for _point in _points:
+                copy.write_row(_point)
+        
+        cur.execute("""
+            INSERT INTO points
+            SELECT *
+            FROM tmp_table
+            ON CONFLICT DO NOTHING;
+        """)
+
+    end = time.time()
+    print("Inserted {} points, {} per second".format(len(_points), len(_points) / (end - start)))
+
+    # db.create_indexes(conn)
+    conn.commit()
 
 
 import sys
+import os
 offset = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+db.drop_indexes(conn)
 
 for i in range(offset, 77):
     zeropadded = str(i).zfill(12)
     filename = "2022_place_canvas_history-{}.csv.gzip".format(zeropadded)
-    url = "https://placedata.reddit.com/data/canvas-history/{}".format(filename)
 
-    print("Streaming {}".format(filename))
+    next_filename = "2022_place_canvas_history-{}.csv.gzip".format(str(i + 1).zfill(12))
+    if i != 77 and not os.path.exists(next_filename):
+        print("missing {}".format(next_filename))
+        break
 
-    with urlopen(url) as gzip_file:
+    print("Opening {}".format(filename))
+
+    with open(filename, 'rb') as gzip_file:
         fd = gzip.GzipFile(fileobj=gzip_file, mode="r")
 
         lines_batch = []
@@ -131,15 +133,19 @@ for i in range(offset, 77):
                 ",".join(comma_split[3:]).replace('"', ''),
             )
             lines_batch.append(parsed_line)
-            if len(lines_batch) == 100000:
-                _read_users(lines_batch)
-                try:
-                    _read_points(lines_batch)
-                except NotNullViolation:
-                    print("Got a NotNullViolation, forcing user re-import")
-                    conn.rollback()
-                    _read_users(lines_batch, force=True)
-                    _read_points(lines_batch, force=True)
-
+            if len(lines_batch) == 10000000:
+                print("Reading lines...")
+                if _check_exists(lines_batch):
+                    print("Skipping, exists")
+                    lines_batch = []
+                    continue
+                _read_points(lines_batch)
                 lines_batch = []
-            
+
+        print("Reading lines...")
+        if _check_exists(lines_batch):
+            print("Skipping, exists")
+            lines_batch = []
+            continue
+        _read_points(lines_batch)
+

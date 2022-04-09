@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 
-import psycopg2
+import psycopg
 import argparse
 import datetime
+from dateutil import parser as dateparser
 
+# Star wars poster
+# ./get_users.py -r573,701,668,841
 
-conn = psycopg2.connect(
-    host="localhost",
-    port="5432",
-    dbname="place",
-    user="postgres",
-    password="mysecretpassword"
-)
+# Original finnish flag
+# ./get_users.py -r288,961,435,999 --correct_time 1648851707221
+
+import db
+
+conn = db.get_conn()
 cur = conn.cursor()
 
 parser = argparse.ArgumentParser(description="Print all uers who contributed to image at given points",
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('-p', action='append', nargs='+', help="Point (e.g. 420,420)")
 parser.add_argument('-r', action='append', nargs='+', help="Rectangle (e.g. 69,69,420,420)")
-parser.add_argument("--correct_time", help="Timestamp when image is correct", default=str(datetime.datetime.now()))
+parser.add_argument("--correct_time", help="Timestamp when image is correct (unix)", default=None)
 args = parser.parse_args()
 config = vars(args)
 print(config)
@@ -41,6 +43,12 @@ for _rect_str in (config.get('r', [[]]) or [[]]):
 
 # Get correct color for each point
 
+if not config.get('correct_time'):
+    config['correct_time'] = '1649112287221'  # Start of white pixels only
+
+first_date = datetime.datetime.fromtimestamp(1648817027.221)
+selected_date = datetime.datetime.fromtimestamp(int(config['correct_time']) / 1000.0)
+
 for point in points.keys():
     cur.execute("""
         SELECT color
@@ -48,7 +56,7 @@ for point in points.keys():
         WHERE coord_x = %s AND coord_y = %s AND time <= %s
         ORDER BY time DESC
         LIMIT 1
-    """, (point[0], point[1], config['correct_time']))
+    """, (point[0], point[1], selected_date))
     try:
         points[point] = cur.fetchone()[0]
     except TypeError:
@@ -70,3 +78,7 @@ for point, color in points.items():
 
 
 print(all_users)
+
+import json
+with open('users.json', 'w') as f:
+    json.dump(list(all_users), f)
