@@ -26,7 +26,7 @@ def _parse_rows(rows, user_ids=None):
     date is in format:
         2022-04-04 01:03:24.691 UTC
     we want to get milliseconds after
-        2022-04-01 15:43:47.221000
+        2022-04-01 12:43:47.221000 UTC
     and store that to db
 
     return (time, coord_x, coord_y, color, user_id)
@@ -45,7 +45,7 @@ def _parse_rows(rows, user_ids=None):
         }
         after_beginning = (
             (date_parts['day'] - 1) * 24 * 60 * 60 * 1000 +
-            (date_parts['hour'] - 15) * 60 * 60 * 1000 +
+            (date_parts['hour'] - 12) * 60 * 60 * 1000 +
             (date_parts['minute'] - 43) * 60 * 1000 +
             (date_parts['second'] - 47) * 1000 +
             (date_parts['millisecond'] - 221)
