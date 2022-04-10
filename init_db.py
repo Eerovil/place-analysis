@@ -10,13 +10,16 @@ conn = psycopg.connect(
 )
 
 conn.autocommit = True
-cur = conn.cursor()
-cur.execute('DROP DATABASE IF EXISTS place')
-cur.execute('CREATE DATABASE place')
-conn.commit()
+if input("Really init?") == "y":
+    cur = conn.cursor()
+    cur.execute('DROP DATABASE IF EXISTS place')
+    cur.execute('CREATE DATABASE place')
+    conn.commit()
 
-conn = db.get_conn()
-
-db.init_db(conn)
+    conn = db.get_conn()
+    if input("init users?") == "y":
+        db.init_db(conn, users=True)
+    else:
+        db.init_db(conn)
 
 conn.close()

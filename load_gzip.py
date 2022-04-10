@@ -92,7 +92,7 @@ def _read_users(rows):
     cur.execute("""
         CREATE TEMP TABLE tmp_table (
             user_name VARCHAR(90) NOT NULL
-        )
+        ) ON COMMIT DROP;
     """)
 
     with cur.copy("""COPY tmp_table (user_name) FROM STDIN;""") as copy:
@@ -198,7 +198,7 @@ for i in range(offset, 77):
                 ",".join(comma_split[3:]).replace('"', ''),
             )
             lines_batch.append(parsed_line)
-            if len(lines_batch) == 100000:
+            if len(lines_batch) == 500000:
                 print("Reading lines...")
                 if _check_exists(lines_batch):
                     print("Skipping, exists")

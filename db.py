@@ -17,18 +17,19 @@ def get_conn():
     )
 
 
-def init_db(conn):
+def init_db(conn, users=False):
     """
     point.time is ms after BEGINNING_TIME
     """
     cur = conn.cursor()
 
-    cur.execute('DROP TABLE IF EXISTS place_users CASCADE')
+    if users:
+        cur.execute('DROP TABLE IF EXISTS place_users CASCADE')
 
     cur.execute("""
-    CREATE TABLE place_users (
-        user_id SERIAL PRIMARY KEY,
-        user_name VARCHAR(90) NOT NULL
+    CREATE TABLE IF NOT EXISTS place_users (
+        user_name VARCHAR(90) PRIMARY KEY,
+        user_id SERIAL
         );
     """)
 
@@ -39,20 +40,8 @@ def init_db(conn):
         coord_x SMALLINT NOT NULL,
         coord_y SMALLINT NOT NULL,
         color INTEGER NOT NULL,
-        user_id INTEGER NOT NULL,
-        FOREIGN KEY (user_id) REFERENCES place_users(user_id),
-        PRIMARY KEY (time, coord_x, coord_y, user_id)
+        user_id INTEGER NOT NULL
         )
-    """)
-
-    cur.execute("""
-        CREATE INDEX coord_index
-        ON points (coord_x, coord_y);
-    """)
-
-    cur.execute("""
-        CREATE INDEX user_index
-        ON place_users (user_name);
     """)
 
     cur.execute("""
